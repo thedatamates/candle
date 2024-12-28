@@ -321,6 +321,37 @@ impl MetalDevice {
             .map_err(MetalError::from)?;
         Ok(())
     }
+
+    pub fn get_memory_usage(&self) -> Result<usize> {
+        let buffers = self.buffers.read().map_err(MetalError::from)?;
+        let mut total_bytes = 0;
+
+        // Iterate through all buffers in the BufferMap
+        for ((buffer_size, _), subbuffers) in buffers.iter() {
+            // For each buffer in this size category
+            for buffer in subbuffers {
+                // Only count buffers that are actually in use (strong_count > 1)
+                // strong_count == 1 means only the allocator holds a reference
+                if Arc::strong_count(buffer) > 1 {
+                    total_bytes += *buffer_size;
+                }
+            }
+        }
+
+        Ok(total_bytes)
+    }
+
+    pub fn get_allocated_memory(&self) -> Result<usize> {
+        let buffers = self.buffers.read().map_err(MetalError::from)?;
+        let mut total_bytes = 0;
+
+        // Count total allocated memory regardless of whether buffers are in use
+        for ((buffer_size, _), subbuffers) in buffers.iter() {
+            total_bytes += buffer_size * subbuffers.len();
+        }
+
+        Ok(total_bytes)
+    }
 }
 
 fn buf_size(size: NSUInteger) -> NSUInteger {
