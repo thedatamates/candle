@@ -322,7 +322,7 @@ impl MetalDevice {
         Ok(())
     }
 
-    pub fn get_memory_usage(&self) -> Result<usize> {
+    pub fn get_memory_usage(&self) -> Result<u64> {
         let buffers = self.buffers.read().map_err(MetalError::from)?;
         let mut total_bytes = 0;
 
@@ -341,13 +341,13 @@ impl MetalDevice {
         Ok(total_bytes)
     }
 
-    pub fn get_allocated_memory(&self) -> Result<usize> {
+    pub fn get_allocated_memory(&self) -> Result<u64> {
         let buffers = self.buffers.read().map_err(MetalError::from)?;
         let mut total_bytes = 0;
 
         // Count total allocated memory regardless of whether buffers are in use
         for ((buffer_size, _), subbuffers) in buffers.iter() {
-            total_bytes += buffer_size * subbuffers.len();
+            total_bytes += buffer_size * subbuffers.len() as u64;
         }
 
         Ok(total_bytes)
