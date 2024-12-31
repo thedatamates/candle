@@ -719,7 +719,7 @@ pub struct GradStore(HashMap<TensorId, Tensor>);
 
 impl GradStore {
     /// Create a new gradient store
-    fn new() -> Self {
+    pub fn new() -> Self {
         GradStore(HashMap::new())
     }
 
@@ -745,7 +745,7 @@ impl GradStore {
 
     /// Get the gradient tensor associated with the given tensor, or, if it does not exist,
     /// insert a tensor of zeroes, with the same shape and type as the given tensors and return it
-    fn or_insert(&mut self, tensor: &Tensor) -> Result<&mut Tensor> {
+    pub fn or_insert(&mut self, tensor: &Tensor) -> Result<&mut Tensor> {
         use std::collections::hash_map::Entry;
         let grad = match self.0.entry(tensor.id()) {
             Entry::Occupied(entry) => entry.into_mut(),
