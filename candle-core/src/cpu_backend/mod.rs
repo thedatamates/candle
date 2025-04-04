@@ -3488,6 +3488,16 @@ impl BackendStorage for CpuStorage {
         MatMulWithAlpha(MatMul(bmnk)).map(self, lhs_l, rhs, rhs_l, s)
     }
 
+    fn matmul_no_batch(
+        &self,
+        _rhs: &Self,
+        _mnk: (usize, usize, usize),
+        _lhs_l: &Layout,
+        _rhs_l: &Layout,
+    ) -> Result<Self> {
+        Err(Error::Msg("no cpu support for matmul no batch".to_string()))
+    }
+
     fn device(&self) -> &Self::Device {
         &CpuDevice
     }

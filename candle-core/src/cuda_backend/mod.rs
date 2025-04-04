@@ -1166,6 +1166,66 @@ fn gemm_config<T>(
     })
 }
 
+fn gemm_config_no_batch<T>(
+    alpha: T,
+    beta: T,
+    (m, n, k): (usize, usize, usize, usize),
+    lhs_l: &Layout,
+    rhs_l: &Layout,
+) -> Result<GemmConfig<T>> {
+    // https://docs.nvidia.com/cuda/cublas/index.html#cublas-t-gemm
+    use cudarc::cublas::sys::cublasOperation_t;
+
+    let lhs_stride = lhs_l.stride();
+    let rhs_stride = rhs_l.stride();
+    let rhs_m1 = rhs_stride[rhs_stride.len() - 1];
+    let rhs_m2 = rhs_stride[rhs_stride.len() - 2];
+    let lhs_m1 = lhs_stride[lhs_stride.len() - 1];
+    let lhs_m2 = lhs_stride[lhs_stride.len() - 2];
+    // The a tensor has dims k, n (rhs)
+    // We also allow for the case where the stride on the minor dimension is not as expected but
+    // there is a single element.
+    let (lda, transa) = if (rhs_m1 == 1 || n == 1) && (rhs_m2 == n || k == 1) {
+        (n as i32, cublasOperation_t::CUBLAS_OP_N)
+    } else if (rhs_m1 == k || n == 1) && (rhs_m2 == 1 || k == 1) {
+        (k as i32, cublasOperation_t::CUBLAS_OP_T)
+    } else {
+        Err(CudaError::MatMulNonContiguous {
+            lhs_stride: lhs_l.clone(),
+            rhs_stride: rhs_l.clone(),
+            mnk: (m, n, k),
+        })?
+    };
+    // The b tensor has dims m, k (lhs)
+    // We also allow for the case where the stride on the minor dimension is not as expected but
+    // there is a single element.
+    let (ldb, transb) = if (lhs_m1 == 1 || k == 1) && (lhs_m2 == k || m == 1) {
+        (k as i32, cublasOperation_t::CUBLAS_OP_N)
+    } else if (lhs_m1 == m || k == 1) && (lhs_m2 == 1 || m == 1) {
+        (m as i32, cublasOperation_t::CUBLAS_OP_T)
+    } else {
+        Err(CudaError::MatMulNonContiguous {
+            lhs_stride: lhs_l.clone(),
+            rhs_stride: rhs_l.clone(),
+            mnk: (m, n, k),
+        })?
+    };
+    // The setup below was copied from:
+    // https://github.com/lebedov/scikit-cuda/blob/7e7300474286019c917a6c8a4bca59405c64fbce/tests/test_cublas.py#L531
+    Ok(GemmConfig {
+        alpha,
+        beta,
+        m: n as i32,
+        n: m as i32,
+        k: k as i32,
+        lda,
+        ldb,
+        ldc: n as i32,
+        transa,
+        transb,
+    })
+}
+
 impl BackendStorage for CudaStorage {
     type Device = CudaDevice;
 
@@ -1801,6 +1861,36 @@ impl BackendStorage for CudaStorage {
         Ok(())
     }
 
+    fn matmul_no_batch(
+        &self,
+        rhs: &Self,
+        (m, n, k): (usize, usize, usize),
+        lhs_l: &Layout,
+        rhs_l: &Layout,
+    ) -> Result<Self> {
+        let elem_count = m * n;
+        let dev = &self.device;
+        let slice = match (&self.slice, &rhs.slice) {
+            (CudaStorageSlice::BF16(lhs), CudaStorageSlice::BF16(rhs)) => {
+                let lhs = &lhs.slice(lhs_l.start_offset()..);
+                let rhs = &rhs.slice(rhs_l.start_offset()..);
+                let cfg = gemm_config_no_batch(
+                    bf16::from_f64(scale.unwrap_or(1.)),
+                    bf16::ZERO,
+                    (m, n, k),
+                    lhs_l,
+                    rhs_l,
+                )?;
+                let mut out = unsafe { dev.alloc::<bf16>(elem_count) }.w()?;
+                unsafe { gemm_bf16(&self.device.blas, cfg, rhs, lhs, &mut out) }.w()?;
+                CudaStorageSlice::BF16(out)
+            }
+            _ => Err(CudaError::InternalError("dtype not supported in matmul op"))?,
+        };
+        let device = dev.clone();
+        Ok(Self { slice, device })
+    }
+
     fn matmul_with_alpha(
         &self,
         rhs: &Self,
@@ -2285,6 +2375,57 @@ unsafe fn gemm_strided_batched_bf16(
         cfg.gemm.ldc,
         cfg.stride_c,
         cfg.batch_size,
+        compute_type,
+        sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
+    )
+}
+
+unsafe fn gemm_bf16(
+    cublas: &cudarc::cublas::CudaBlas,
+    cfg: GemmConfig<bf16>,
+    a: &cudarc::driver::CudaView<bf16>,
+    b: &cudarc::driver::CudaView<bf16>,
+    c: &mut CudaSlice<bf16>,
+) -> std::result::Result<(), cudarc::cublas::result::CublasError> {
+    use cudarc::cublas::sys;
+    use cudarc::driver::DevicePtrMut;
+
+    let alpha_f32: f32 = cfg.alpha.to_f32();
+    let beta_f32: f32 = cfg.beta.to_f32();
+    // The type for alpha and beta depends on the computeType.
+    // https://docs.nvidia.com/cuda/cublas/index.html#cublasgemmstridedbatchedex
+    let (compute_type, alpha, beta) = if gemm_reduced_precision_bf16() {
+        (
+            sys::cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_16BF,
+            (&alpha_f32) as *const f32 as *const _,
+            (&beta_f32) as *const f32 as *const _,
+        )
+    } else {
+        (
+            sys::cublasComputeType_t::CUBLAS_COMPUTE_32F,
+            (&alpha_f32) as *const f32 as *const _,
+            (&beta_f32) as *const f32 as *const _,
+        )
+    };
+
+    cudarc::cublas::result::gemm_ex(
+        *cublas.handle(),
+        cfg.transa,
+        cfg.transb,
+        cfg.m,
+        cfg.n,
+        cfg.k,
+        alpha,
+        *a.device_ptr() as *const _,
+        sys::cudaDataType_t::CUDA_R_16BF,
+        cfg.lda,
+        *b.device_ptr() as *const _,
+        sys::cudaDataType_t::CUDA_R_16BF,
+        cfg.ldb,
+        beta,
+        *c.device_ptr_mut() as *mut _,
+        sys::cudaDataType_t::CUDA_R_16BF,
+        cfg.ldc,
         compute_type,
         sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT_TENSOR_OP,
     )

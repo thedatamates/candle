@@ -111,6 +111,15 @@ pub trait BackendStorage: Sized {
         _: &Layout,
     ) -> Result<Self>;
 
+    #[allow(clippy::too_many_arguments)]
+    fn matmul_no_batch(
+        &self,
+        _: &Self,
+        _: (usize, usize, usize),
+        _: &Layout,
+        _: &Layout,
+    ) -> Result<Self>;
+
     fn copy_strided_src(&self, _: &mut Self, _: usize, _: &Layout) -> Result<()>;
 
     #[allow(clippy::too_many_arguments)]

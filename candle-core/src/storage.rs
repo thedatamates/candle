@@ -772,6 +772,35 @@ impl Storage {
         }
     }
 
+    pub(crate) fn matmul_no_batch(
+        &self,
+        rhs: &Self,
+        mnk: (usize, usize, usize),
+        lhs_layout: &Layout,
+        rhs_layout: &Layout,
+    ) -> Result<Self> {
+        self.same_device(rhs, "matmul_no_batch")?;
+        self.same_dtype(rhs, "matmul_no_batch")?;
+        match (self, rhs) {
+            (Self::Cpu(_lhs), Self::Cpu(_rhs)) => {
+                Err(Error::Msg("no cpu support for matmul no batch".to_string()))
+            }
+            (Self::Cuda(lhs), Self::Cuda(rhs)) => {
+                let storage = lhs.matmul_no_batch(rhs, mnk, lhs_layout, rhs_layout)?;
+                Ok(Self::Cuda(storage))
+            }
+            (Self::Metal(_lhs), Self::Metal(_rhs)) => Err(Error::Msg(
+                "no metal support for matmul no batch".to_string(),
+            )),
+            (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
+                lhs: lhs.device().location(),
+                rhs: rhs.device().location(),
+                op: "matmul",
+            }
+            .bt()),
+        }
+    }
+
     // self, the source can be strided whereas dst is contiguous.
     pub(crate) fn copy_strided_src(
         &self,

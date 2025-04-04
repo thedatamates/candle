@@ -1363,6 +1363,58 @@ impl Tensor {
         }
     }
 
+    /// Returns the non batched matrix-multiplication of the input tensor with the other provided tensor.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - A tensor with dimensions `m, k`.
+    /// * `rhs` - A tensor with dimensions `k, n`.
+    ///
+    /// The resulting tensor has dimensions `m, n`.
+    pub fn matmul_no_batch(&self, rhs: &Self) -> Result<Self> {
+        let a_dims = self.shape().dims();
+        let b_dims = rhs.shape().dims();
+
+        let dim = a_dims.len();
+
+        if dim < 2 || b_dims.len() != dim {
+            Err(Error::ShapeMismatchBinaryOp {
+                lhs: self.shape().clone(),
+                rhs: rhs.shape().clone(),
+                op: "matmul",
+            }
+            .bt())?
+        }
+
+        let m = a_dims[dim - 2];
+        let k = a_dims[dim - 1];
+        let k2 = b_dims[dim - 2];
+        let n = b_dims[dim - 1];
+
+        let c_shape = Shape::from(&a_dims[..dim - 2]).extend(&[m, n]);
+        if c_shape.elem_count() == 0 || k == 0 {
+            return Tensor::zeros(c_shape, self.dtype(), self.device());
+        }
+
+        if k != k2 {
+            Err(Error::ShapeMismatchBinaryOp {
+                lhs: self.shape().clone(),
+                rhs: rhs.shape().clone(),
+                op: "matmul",
+            }
+            .bt())?
+        }
+
+        let storage = self.storage().matmul_no_batch(
+            &rhs.storage(),
+            (m, n, k),
+            self.layout(),
+            rhs.layout(),
+        )?;
+        let op = BackpropOp::new2(self, rhs, Op::Matmul);
+        Ok(from_storage(storage, c_shape, op, false))
+    }
+
     /// Returns the matrix-multiplication of the input tensor with the other provided tensor. The result is scaled
     /// and then added to the output tensor, the bias tensor `c`.
     ///

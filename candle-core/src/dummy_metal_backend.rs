@@ -176,6 +176,16 @@ impl crate::backend::BackendStorage for MetalStorage {
         Err(Error::NotCompiledWithMetalSupport)
     }
 
+    fn matmul_no_batch(
+        &self,
+        _: &Self,
+        _: (usize, usize, usize),
+        _: &Layout,
+        _: &Layout,
+    ) -> Result<Self> {
+        Err(Error::NotCompiledWithMetalSupport)
+    }
+
     fn copy_strided_src(&self, _: &mut Self, _: usize, _: &Layout) -> Result<()> {
         Err(Error::NotCompiledWithMetalSupport)
     }
